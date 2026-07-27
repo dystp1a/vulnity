@@ -1,0 +1,118 @@
+name: orchestrator
+
+services:
+  orchestrator:
+    build: .
+    command: >
+      streamlit run app.py
+      --server.port=8501
+      --server.address=0.0.0.0
+      --server.fileWatcherType=none
+      --server.maxUploadSize=0
+      --server.enableCORS=false
+    ports:
+      - "8501:8501"
+    environment:
+      - SONAR_TOKEN=${SONAR_TOKEN}
+      - OLLAMA_EMBED_MODEL=${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      - RAG_STORE_PATH=${RAG_STORE_PATH:-rag_store}
+      - JUDGE_MODEL=${JUDGE_MODEL:-deepseek-coder:6.7b}
+      - JUDGE_MAX_RETRIES=${JUDGE_MAX_RETRIES:-1}
+      - DEBUG=${DEBUG:-0}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - shared_workspace:/app/shared
+      - .:/app
+    depends_on:
+      - sonarqube
+      - zap
+      - juice-shop
+      - ollama
+    networks:
+      - orchestrator_net
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: sonar
+      POSTGRES_PASSWORD: sonar
+      POSTGRES_DB: sonarqube
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - orchestrator_net
+
+  sonarqube:
+    image: sonarqube:9.9-community
+    depends_on:
+      - postgres
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://postgres:5432/sonarqube
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: sonar
+    ports:
+      - "9000:9000"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+    networks:
+      - orchestrator_net
+
+  zap:
+    image: ghcr.io/zaproxy/zaproxy:stable
+    command: >
+      zap.sh -daemon
+      -host 0.0.0.0
+      -port 8080
+      -config api.disablekey=true
+      -config api.addrs.addr.name=.*
+      -config api.addrs.addr.regex=true
+      -config ascan.threadPerHost=2
+      -config connection.timeoutInSecs=15
+    mem_limit: 2g
+    ports:
+      - "8080:8080"
+    networks:
+      - orchestrator_net
+
+  juice-shop:
+    image: bkimminich/juice-shop
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_OPTIONS=--max-old-space-size=4096
+    mem_limit: 6g
+    networks:
+      - orchestrator_net
+
+  ollama:
+    image: ollama/ollama:0.3.14
+    mem_limit: 6g
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - orchestrator_net
+
+networks:
+  orchestrator_net:
+    name: orchestrator_default
+    driver: bridge
+
+volumes:
+  shared_workspace:
+    external: true
+    name: orchestrator_shared_workspace
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:
+  postgres_data:
